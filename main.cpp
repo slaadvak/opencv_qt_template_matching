@@ -12,13 +12,13 @@
 #include <mutex>
 #include <thread>
 
-void fastLoopCode(cv::Mat& frameCV);
-void viewLoopCode(cv::Mat& frameCV);
+void fastLoopCode();
+void viewLoopCode();
 
 struct Frame
 {
     uint id;
-    cv::Mat& mat;
+    cv::Mat* mat;
 };
 
 std::mutex mtx;
@@ -29,20 +29,18 @@ int main(int argc, char *argv[])
     (void)argc;
     (void)argv;
 
-    //cv::Mat frameCV(cv::Size(1920, 1080), CV_8UC3);
-    cv::Mat frameCV;
-
-    std::thread fastLoop([&frameCV]()
+    std::thread fastLoop([]()
     {
-        fastLoopCode(frameCV);
-    });
-
-    std::thread viewLoop([&frameCV]()
-    {
-        viewLoopCode(frameCV);
+        fastLoopCode();
     });
 
     fastLoop.join();
+
+    std::thread viewLoop([]()
+    {
+        viewLoopCode();
+    });
+
     viewLoop.join();
 
     // Closes all the frames
@@ -55,11 +53,15 @@ void enqueue_mat(cv::Mat& mat)
 {
     static uint frame_count = 0;
 
-    sq.push({frame_count, mat});
+    // Will be deleted by consumer
+    cv::Mat* copy = new cv::Mat(mat.size(), mat.type());
+    mat.copyTo(*copy);
+
+    sq.push({frame_count, copy});
     frame_count += 1;
 }
 
-void fastLoopCode(cv::Mat& frameCV)
+void fastLoopCode()
 {
     cv::VideoCapture cap("/home/vm/imagia/field.mp4");
 
@@ -73,17 +75,16 @@ void fastLoopCode(cv::Mat& frameCV)
     while(true)
     {
         static uint counter = 0;
-        mtx.lock();
-
-//        cv::Mat frame;
 
         // Capture frame-by-frame
-        cap >> frameCV;
-        mtx.unlock();
+        cv::Mat mat;
+        cap >> mat;
 
-        if(frameCV.empty())
+        enqueue_mat(mat);
+
+        if(mat.empty())
         {
-          break;
+            break;
         }
 
         qDebug() << "Produce" << counter;
@@ -93,7 +94,7 @@ void fastLoopCode(cv::Mat& frameCV)
     cap.release();
 }
 
-void viewLoopCode(cv::Mat& frameCV)
+void viewLoopCode()
 {
     namedWindow("frame", cv::WINDOW_AUTOSIZE);
     cv::waitKey(1);
@@ -102,21 +103,40 @@ void viewLoopCode(cv::Mat& frameCV)
     {
         static uint counter = 0;
 
-        mtx.lock();
-        if(frameCV.empty())
+        // Retrieve frame
+        Frame f;
+        if(sq.pop(f))
         {
-          break;
+            QElapsedTimer timer;
+            timer.start();
+
+            if(f.mat->empty())
+            {
+                delete f.mat;
+                break;
+            }
+
+            qDebug() << "Showing" << f.id;
+            cv::imshow("frame", *f.mat);
+
+            qDebug() << "Consume" << counter;
+            counter += 1;
+
+            delete f.mat;
+
+            cv::waitKey(1);
+
+            qDebug() << "elapsed1=" << timer.elapsed() << "ms";
         }
-        cv::imshow("frame", frameCV);
-        mtx.unlock();
-
-        cv::waitKey(1);
-
-        qDebug() << "Consume" << counter;
-        counter += 1;
+        else
+        {
+            qDebug() << "Waiting";
+            cv::waitKey(1);
+        }
     }
-}
 
+    cv::waitKey(1);
+}
 
 int main2(int argc, char *argv[])
 {
@@ -144,7 +164,7 @@ int main2(int argc, char *argv[])
 
     while(1)
     {
-        const int sleep_period_ms = 17;
+//        const int sleep_period_ms = 17;
         static uint counter = 0;
 
         cv::Mat frame;
