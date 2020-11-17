@@ -1,7 +1,5 @@
-#include "template_matching.h"
 #include "sync_queue.h"
 
-#include <QApplication>
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QThread>
@@ -9,136 +7,46 @@
 #include "opencv2/opencv.hpp"
 
 #include <filesystem>
-#include <mutex>
-#include <thread>
 
-void fastLoopCode();
-void viewLoopCode();
+void matching_method( cv::Mat& frame, cv::Mat& templ, cv::Mat& result, cv::Mat& mask, cv::Mat& img_display, int match_method, bool use_mask = false);
 
-struct Frame
-{
-    uint id;
-    cv::Mat* mat;
-};
+std::string& type2str(int type, std::string& r) {
 
-std::mutex mtx;
-sync_queue<Frame> sq;
+  uchar depth = type & CV_MAT_DEPTH_MASK;
+  uchar chans = 1 + (type >> CV_CN_SHIFT);
+
+  switch ( depth ) {
+    case CV_8U:  r = "8U"; break;
+    case CV_8S:  r = "8S"; break;
+    case CV_16U: r = "16U"; break;
+    case CV_16S: r = "16S"; break;
+    case CV_32S: r = "32S"; break;
+    case CV_32F: r = "32F"; break;
+    case CV_64F: r = "64F"; break;
+    default:     r = "User"; break;
+  }
+
+  r += "C";
+  r += (chans+'0');
+
+  return r;
+}
+
+//void processFrame(cv::Mat& mat)
+//{
+//  const int sleep_period_ms = 17;
+
+//  QElapsedTimer timer;
+//  timer.start();
+
+//  // your implementation of the template matching goes here
+
+//  ulong time_diff = sleep_period_ms - timer.elapsed();
+//  time_diff = MIN(0, time_diff);
+//  QThread::msleep(time_diff);
+//}
 
 int main(int argc, char *argv[])
-{
-    (void)argc;
-    (void)argv;
-
-    std::thread fastLoop([]()
-    {
-        fastLoopCode();
-    });
-
-    fastLoop.join();
-
-    std::thread viewLoop([]()
-    {
-        viewLoopCode();
-    });
-
-    viewLoop.join();
-
-    // Closes all the frames
-    cv::destroyAllWindows();
-
-    return 0;
-}
-
-void enqueue_mat(cv::Mat& mat)
-{
-    static uint frame_count = 0;
-
-    // Will be deleted by consumer
-    cv::Mat* copy = new cv::Mat(mat.size(), mat.type());
-    mat.copyTo(*copy);
-
-    sq.push({frame_count, copy});
-    frame_count += 1;
-}
-
-void fastLoopCode()
-{
-    cv::VideoCapture cap("/home/vm/imagia/field.mp4");
-
-    // Check if camera opened successfully
-    if(!cap.isOpened())
-    {
-        qDebug() << "Error opening video stream or file" << endl;
-        return;
-    }
-
-    while(true)
-    {
-        static uint counter = 0;
-
-        // Capture frame-by-frame
-        cv::Mat mat;
-        cap >> mat;
-
-        enqueue_mat(mat);
-
-        if(mat.empty())
-        {
-            break;
-        }
-
-        qDebug() << "Produce" << counter;
-        counter += 1;
-    }
-
-    cap.release();
-}
-
-void viewLoopCode()
-{
-    namedWindow("frame", cv::WINDOW_AUTOSIZE);
-    cv::waitKey(1);
-
-    while(1)
-    {
-        static uint counter = 0;
-
-        // Retrieve frame
-        Frame f;
-        if(sq.pop(f))
-        {
-            QElapsedTimer timer;
-            timer.start();
-
-            if(f.mat->empty())
-            {
-                delete f.mat;
-                break;
-            }
-
-            qDebug() << "Showing" << f.id;
-            cv::imshow("frame", *f.mat);
-
-            qDebug() << "Consume" << counter;
-            counter += 1;
-
-            delete f.mat;
-
-            cv::waitKey(1);
-
-            qDebug() << "elapsed1=" << timer.elapsed() << "ms";
-        }
-        else
-        {
-            qDebug() << "Waiting";
-            cv::waitKey(1);
-        }
-    }
-
-    cv::waitKey(1);
-}
-
-int main2(int argc, char *argv[])
 {
     (void)argc;
     (void)argv;
@@ -146,14 +54,23 @@ int main2(int argc, char *argv[])
     qDebug() << "CWD:" << std::filesystem::current_path().c_str();
     qDebug() << cv::getBuildInformation().c_str();
 
-//    QApplication a(argc, argv);
-//    TemplateMatching w;
-//    w.show();
-//    return a.exec();
-
-    // Create a VideoCapture object and open the input file
-    // If the input is the web camera, pass 0 instead of the video file name
     cv::VideoCapture cap("/home/vm/imagia/field.mp4");
+    cv::Mat templ = cv::imread("/home/vm/imagia/template.png");
+    cv::Mat full_templ = cv::imread("/home/vm/imagia/template.png", cv::IMREAD_UNCHANGED);
+
+
+    if(templ.empty())
+    {
+        qDebug() << "Cannot load template!";
+        return -1;
+    }
+
+//    qDebug() << "Template channels:" << templ.channels();
+//    imshow("templ", templ);
+
+    cv::Mat mask( full_templ.rows, full_templ.cols, CV_8UC1 );
+    cv::extractChannel(full_templ, mask, 3);
+//    imshow("mask", mask);
 
     // Check if camera opened successfully
     if(!cap.isOpened())
@@ -164,7 +81,6 @@ int main2(int argc, char *argv[])
 
     while(1)
     {
-//        const int sleep_period_ms = 17;
         static uint counter = 0;
 
         cv::Mat frame;
@@ -183,34 +99,42 @@ int main2(int argc, char *argv[])
         QElapsedTimer timer;
         timer.start();
 
-//        ulong sleep_ms = sleep_period_ms - timer.elapsed();
-//        qDebug() << "sleeping" << sleep_ms << "ms";
-//        QThread::msleep(sleep_ms);
+        if(counter == 1)
+        {
+            std::string type;
+            qDebug() << "Type:" << type2str(frame.type(), type).c_str()
+                     << frame.cols << "x" << frame.rows;
+            qDebug() << "Continuous:" << frame.isContinuous();
+        }
+
+        cv::Mat frame_gray;
+//        cv::cvtColor(frame, frame_gray, cv::COLOR_YUV2GRAY_420);
+
+        qDebug() << "Gray channels:" << frame_gray.channels();
+
+        // Display the resulting frame
+        imshow("Frame", frame);
 
         qDebug() << "elapsed1=" << timer.elapsed() << "ms";
 
-
-
-        // Display the resulting frame
-        imshow("Frame", frame );
+        cv::Mat result;
+        cv::Mat img_display;
+        matching_method(frame, templ, mask, result, img_display, cv::TM_SQDIFF, true);
 
         qDebug() << "elapsed2=" << timer.elapsed() << "ms";
 
-//        // Press  ESC on keyboard to exit
-        char c=(char)cv::waitKey(1);
-        if(c==27)
-          break;
+        imshow("result", result);
+        imshow("img_display", img_display);
+
+        cv::waitKey(1);
 
         qDebug() << "elapsed3=" << timer.elapsed() << "ms";
+
+//        processFrame(frame);
+
+        qDebug() << "elapsed4=" << timer.elapsed() << "ms";
+
         qDebug() << "==============================";
-
-//        qDebug() << timer.elapsed();
-//        qDebug() << sleep_period_ms - timer.elapsed();
-
-
-//        ulong sleep_ms = sleep_period_ms - timer.elapsed();
-//        qDebug() << "sleeping" << sleep_ms << "ms";
-//        QThread::msleep(sleep_ms);
     }
 
     // When everything done, release the video capture object
@@ -220,4 +144,48 @@ int main2(int argc, char *argv[])
     cv::destroyAllWindows();
 
     return 0;
+}
+
+
+void matching_method( cv::Mat& frame, cv::Mat& templ, cv::Mat& mask, cv::Mat& result, cv::Mat& img_display, int match_method, bool use_mask)
+{
+  frame.copyTo( img_display );
+
+  int result_cols =  frame.cols - templ.cols + 1;
+  int result_rows = frame.rows - templ.rows + 1;
+
+  result.create( result_rows, result_cols, CV_32FC1 );
+  bool method_accepts_mask = (cv::TM_SQDIFF == match_method || match_method == cv::TM_CCORR_NORMED);
+  if (use_mask && method_accepts_mask)
+  {
+      matchTemplate( frame, templ, result, match_method, mask);
+  }
+  else
+  {
+      matchTemplate( frame, templ, result, match_method);
+  }
+
+  normalize( result, result, 0, 1, cv::NORM_MINMAX, -1, cv::Mat() );
+
+  double minVal;
+  double maxVal;
+  cv::Point minLoc;
+  cv::Point maxLoc;
+  cv::Point matchLoc;
+
+  minMaxLoc( result, &minVal, &maxVal, &minLoc, &maxLoc, cv::Mat() );
+
+  if( match_method  == cv::TM_SQDIFF || match_method == cv::TM_SQDIFF_NORMED )
+  {
+      matchLoc = minLoc;
+  }
+  else
+  {
+      matchLoc = maxLoc;
+  }
+
+  rectangle( img_display, matchLoc, cv::Point( matchLoc.x + templ.cols , matchLoc.y + templ.rows ), cv::Scalar::all(0), 2, 8, 0 );
+  rectangle( result, matchLoc, cv::Point( matchLoc.x + templ.cols , matchLoc.y + templ.rows ), cv::Scalar::all(0), 2, 8, 0 );
+
+  return;
 }

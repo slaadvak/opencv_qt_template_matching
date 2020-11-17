@@ -1,6 +1,4 @@
-QT       += core gui
-
-greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
+QT       += core
 
 CONFIG += c++17
 
@@ -16,12 +14,10 @@ DEFINES += QT_DEPRECATED_WARNINGS
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
-    main.cpp \
-    template_matching.cpp
+    main.cpp
 
 HEADERS += \
-    sync_queue.h \
-    template_matching.h
+    sync_queue.h
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin
