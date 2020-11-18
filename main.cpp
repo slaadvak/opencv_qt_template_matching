@@ -12,7 +12,6 @@
 void drawMatch(cv::Mat& templ, cv::Mat& frame, std::vector<cv::Point>& match_centers);
 void matching_method3( cv::Mat& frame, cv::Mat& templ, cv::Mat& mask, std::vector<cv::Point>& results, int match_method, bool use_mask, float thres);
 void matching_method2(cv::Mat& img, const cv::Mat& templ, const cv::Mat& mask, int match_method);
-void matching_method( cv::Mat& frame, cv::Mat& templ, cv::Mat& result, cv::Mat& mask, cv::Mat& img_display, int match_method, bool use_mask = false);
 
 std::string& type2str(int type, std::string& r) {
 
@@ -36,7 +35,7 @@ std::string& type2str(int type, std::string& r) {
   return r;
 }
 
-
+void main_loop(cv::VideoCapture& cap, cv::Mat& templ, cv::Mat& mask, int thread_count);
 
 int main(int argc, char *argv[])
 {
@@ -46,14 +45,11 @@ int main(int argc, char *argv[])
     QThread::currentThread()->setPriority(QThread::HighPriority);
 
     qDebug() << "CWD:" << std::filesystem::current_path().c_str();
-    qDebug() << cv::getBuildInformation().c_str();
+//    qDebug() << cv::getBuildInformation().c_str();
 
     cv::VideoCapture cap("/home/vm/imagia/field.mp4");
     cv::Mat templ = cv::imread("/home/vm/imagia/template.png");
     cv::Mat full_templ = cv::imread("/home/vm/imagia/template.png", cv::IMREAD_UNCHANGED);
-
-//    cv::resize(templ, templ, cv::Size(40, 30));
-//    cv::resize(full_templ, full_templ, cv::Size(40, 30));
 
 
     if(templ.empty())
@@ -62,19 +58,31 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-//    qDebug() << "Template channels:" << templ.channels();
-//    imshow("templ", templ);
 
     cv::Mat mask( full_templ.rows, full_templ.cols, CV_8UC1 );
     cv::extractChannel(full_templ, mask, 3);
-//    imshow("mask", mask);
 
-    // Check if camera opened successfully
+    // Check if video file opened successfully
     if(!cap.isOpened())
     {
         qDebug() << "Error opening video stream or file" << endl;
         return -1;
     }
+
+    main_loop(cap, templ, mask, QThread::idealThreadCount() - 1);
+
+    // When everything done, release the video capture object
+    cap.release();
+
+    // Closes all the frames
+    cv::destroyAllWindows();
+
+    return 0;
+}
+
+void main_loop(cv::VideoCapture& cap, cv::Mat& templ, cv::Mat& mask, int thread_count)
+{
+    template_matcher tm(templ, mask, thread_count);
 
     while(1)
     {
@@ -90,107 +98,23 @@ int main(int argc, char *argv[])
           break;
         }
 
-        qDebug() << "Frame" << counter;
+        qDebug() << "Producing frame" << counter;
         counter += 1;
 
-        QElapsedTimer timer;
-        timer.start();
-
-        if(counter == 1)
-        {
-            std::string type;
-            qDebug() << "Type:" << type2str(frame.type(), type).c_str()
-                     << frame.cols << "x" << frame.rows;
-            qDebug() << "Continuous:" << frame.isContinuous();
-        }
-
-        cv::Mat frame_gray;
-//        cv::cvtColor(frame, frame_gray, cv::COLOR_YUV2GRAY_420);
-
-        qDebug() << "Gray channels:" << frame_gray.channels();
+//        if(counter == 1)
+//        {
+//            std::string type;
+//            qDebug() << "Type:" << type2str(frame.type(), type).c_str()
+//                     << frame.cols << "x" << frame.rows;
+//            qDebug() << "Continuous:" << frame.isContinuous();
+//        }
 
         // Display the resulting frame
-        imshow("Frame", frame);
 
-        qDebug() << "elapsed1=" << timer.elapsed() << "ms";
-
-//        cv::resize(frame, frame, cv::Size(1280, 720));
-
-//        imshow("templ", templ);
-//        imshow("mask", mask);
-
-        cv::Mat result;
-        cv::Mat img_display;
-        matching_method(frame, templ, mask, result, img_display, cv::TM_SQDIFF, true);
-
-//        frame.copyTo(img_display);
-//        matching_method2(img_display, templ, mask, cv::TM_SQDIFF);
-
-        qDebug() << "elapsed2=" << timer.elapsed() << "ms";
-
-        imshow("img_display", img_display);
-
-        cv::waitKey(1);
-
-        qDebug() << "elapsed3=" << timer.elapsed() << "ms";
-
-//        processFrame(frame);
-
-        qDebug() << "elapsed4=" << timer.elapsed() << "ms";
+        tm.processFrame(frame);
 
         qDebug() << "==============================";
     }
-
-    // When everything done, release the video capture object
-    cap.release();
-
-    // Closes all the frames
-    cv::destroyAllWindows();
-
-    return 0;
-}
-
-void matching_method( cv::Mat& frame, cv::Mat& templ, cv::Mat& mask, cv::Mat& result, cv::Mat& img_display, int match_method, bool use_mask)
-{
-  frame.copyTo( img_display );
-
-  int result_cols =  frame.cols - templ.cols + 1;
-  int result_rows = frame.rows - templ.rows + 1;
-
-  result.create( result_rows, result_cols, CV_32FC1 );
-  bool method_accepts_mask = (cv::TM_SQDIFF == match_method || match_method == cv::TM_CCORR_NORMED);
-  if (use_mask && method_accepts_mask)
-  {
-      matchTemplate( frame, templ, result, match_method, mask);
-  }
-  else
-  {
-      matchTemplate( frame, templ, result, match_method);
-  }
-
-  normalize( result, result, 0, 1, cv::NORM_MINMAX, -1, cv::Mat() );
-
-  double minVal;
-  double maxVal;
-  cv::Point minLoc;
-  cv::Point maxLoc;
-  cv::Point matchLoc;
-
-  minMaxLoc( result, &minVal, &maxVal, &minLoc, &maxLoc, cv::Mat() );
-
-  if( match_method  == cv::TM_SQDIFF || match_method == cv::TM_SQDIFF_NORMED )
-  {
-      matchLoc = minLoc;
-  }
-  else
-  {
-      matchLoc = maxLoc;
-  }
-
-  rectangle( img_display, matchLoc, cv::Point( matchLoc.x + templ.cols , matchLoc.y + templ.rows ), cv::Scalar::all(0), 2, 8, 0 );
-  rectangle( result, matchLoc, cv::Point( matchLoc.x + templ.cols , matchLoc.y + templ.rows ), cv::Scalar::all(0), 2, 8, 0 );
-
-  return;
 }
 
 void matching_method3( cv::Mat& frame, cv::Mat& templ, cv::Mat& mask, std::vector<cv::Point>& results, int match_method, bool use_mask, float thres)
