@@ -1,0 +1,4 @@
+#ifndef TEMPLATE_MATCHER_H
+#define TEMPLATE_MATCHER_H
+
+#endif // TEMPLATE_MATCHER_H
