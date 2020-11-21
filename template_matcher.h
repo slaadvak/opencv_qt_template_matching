@@ -1,170 +1,136 @@
 #ifndef TEMPLATE_MATCHER_H
 #define TEMPLATE_MATCHER_H
 
-#include <QDebug>
-#include <QElapsedTimer>
+#include <QDir>
+#include <QtGlobal>
 #include <QThread>
 
 #include "opencv2/opencv.hpp"
 
+#include <mutex>
+
 #include "sync_queue.h"
 
+/**
+ * @brief Struct used to store a frame and its id.
+ */
 struct Frame
 {
     int id;
     cv::Mat* mat;
 };
 
-void matching_method( cv::Mat& frame, cv::Mat& templ, cv::Mat& mask, cv::Mat& img_display, int match_method, bool use_mask = true);
-
-void matching_method( cv::Mat& frame, cv::Mat& templ, cv::Mat& mask, cv::Mat& img_display, int match_method, bool use_mask)
-{
-  frame.copyTo( img_display );
-
-  int result_cols =  frame.cols - templ.cols + 1;
-  int result_rows = frame.rows - templ.rows + 1;
-
-  cv::Mat result( result_rows, result_cols, CV_32FC1 );
-  bool method_accepts_mask = (cv::TM_SQDIFF == match_method || match_method == cv::TM_CCORR_NORMED);
-  if (use_mask && method_accepts_mask)
-  {
-      matchTemplate( frame, templ, result, match_method, mask);
-  }
-  else
-  {
-      matchTemplate( frame, templ, result, match_method);
-  }
-
-  normalize( result, result, 0, 1, cv::NORM_MINMAX, -1, cv::Mat() );
-
-  double minVal;
-  double maxVal;
-  cv::Point minLoc;
-  cv::Point maxLoc;
-  cv::Point matchLoc;
-
-  minMaxLoc( result, &minVal, &maxVal, &minLoc, &maxLoc, cv::Mat() );
-
-  if( match_method  == cv::TM_SQDIFF || match_method == cv::TM_SQDIFF_NORMED )
-  {
-      matchLoc = minLoc;
-  }
-  else
-  {
-      matchLoc = maxLoc;
-  }
-
-  rectangle( img_display, matchLoc, cv::Point( matchLoc.x + templ.cols , matchLoc.y + templ.rows ), cv::Scalar::all(0), 2, 8, 0 );
-
-  return;
-}
-
+/**
+ * @brief This object will process a series of frame
+ * to show them on screen, will find a template on them,
+ * will identify the template with a rectangle on the frame
+ * and will write the resulting frame in a file.
+ *
+ * This object creates a producer/consumers mechanism
+ * used to show and process the frames. The "producer"
+ * is the processFrame method, that should be called
+ * in the main thread loop. The "consumers" are the threads
+ * created in this class to match the frames in background.
+ *
+ * The matching method used is TM_SQDIFF.
+ */
 class template_matcher
 {
  public:
     static constexpr auto OUT_FILES_DIR          {"frames/"};
     static constexpr auto OUT_FILE_FORMAT        {"frame%04d.png"};
 
-    template_matcher(cv::Mat& templ, cv::Mat mask, size_t thread_count)
-        : templ(templ), mask(mask), frame_count(0)
+    /**
+     * @brief Ctor
+     * @param templ template used to for the match
+     * @param mask Mask of the template
+     * @param thread_count Number of thread to use for the consumers
+     * @param window The CV window name on which we will show the frames
+     */
+    template_matcher(cv::Mat& templ, cv::Mat mask, size_t thread_count, const char* window)
+        : templ(templ), mask(mask), window(window), thread_count(thread_count)
     {
-        for(size_t i = 0; i < thread_count; i++)
-        {
-            std::thread t([this](int thread_id)
-            {
-                qDebug() << "Starting T#" << thread_id;
+        Q_CHECK_PTR(window);
 
-                while(true)
-                {
-                    // Retrieve frame
-                    Frame f{};
-                    sq.pop(f);
-
-                    // Are we asked to stop ?
-                    if(f.mat == nullptr)
-                    {
-                        qDebug() << "Stopping T#" << thread_id;
-                        break;
-                    }
-
-                    qDebug() << "T#" << thread_id << "on frame #" << f.id;
-
-                    // TODO : get rid of img_display, reuse f.mat instead!!!
-                    cv::Mat img_display;
-                    matching_method(*f.mat, this->templ, this->mask, img_display, cv::TM_SQDIFF, true);
-
-                    // Create filename
-                    auto size = std::snprintf(nullptr, 0, OUT_FILE_FORMAT, f.id);
-                    std::string filename(size + 1, '\0');
-                    std::sprintf(&filename[0], OUT_FILE_FORMAT, f.id);
-
-                    filename = OUT_FILES_DIR + filename;
-
-                    // Write file
-                    if(! cv::imwrite(filename, img_display))
-                    {
-                        qDebug() << "Error writing file " << filename.c_str();
-                    }
-
-                    // Delete bits array created in enqueue_frame
-                    delete f.mat;
-                }
-            }, i);
-
-            consumers.push_back(std::move(t));
-        }
+        create_frames_dir();
+        reset_counters();
+        launch_consumers();
     }
 
-    void processFrame(cv::Mat& mat)
+    /**
+     * @brief Reset the match counters.
+     */
+    void reset_counters(void)
     {
-        const int sleep_period_ms = 17;
-
-        QElapsedTimer timer;
-        timer.start();
-
-        // your implementation of the template matching goes here
-        //=======================================================
-        imshow("Frame", mat);
-        cv::waitKey(1);
-
-        // This new object will be deleted by the consumer thread
-        cv::Mat* copy = new cv::Mat(mat.size(), mat.type());
-        mat.copyTo(*copy);
-
-        sq.push({frame_count, copy});
-
-        frame_count += 1;
-        //=======================================================
-
-        qDebug() << "processFrame elapsed" << timer.elapsed() << "ms";
-
-        ulong time_diff = sleep_period_ms - timer.elapsed();
-        time_diff = MIN(0, time_diff);
-        QThread::msleep(time_diff);
+        frame_to_match_counter = 0;
+        frame_matched_counter = 0;
     }
 
+    /**
+     * @brief Check if the consumer threads are still running.
+     * Thread-safe.
+     * @return True if consumers are running, false otherwise.
+     */
+    bool are_consumers_running(void)
+    {
+        std::unique_lock<std::mutex> mlock(mutex);
+        return (! consumers.empty());
+    }
+
+    /**
+     * @brief Dtor. Will call the kill_consumers method.
+     */
     ~template_matcher()
     {
-        // Send a special Frame that will stop the consumers
-        for(size_t i = 0; i < consumers.size(); i++)
-        {
-            sq.push({0, nullptr});
-        }
+        kill_consumers();
+    }
 
-        // Wait for each consumer to stop
-        for (auto& consumer : consumers)
+    /**
+     * @return The number of frames to match.
+     */
+    int get_frame_to_match_counter() const
+    {
+        return frame_to_match_counter;
+    }
+
+    /**
+     * @return The number of frames already matched.
+     */
+    int get_frame_matched_counter() const
+    {
+        return frame_matched_counter;
+    }
+
+    void processFrame(cv::Mat& mat);
+    void kill_consumers(void);
+
+private:
+    sync_queue<Frame> sq;
+
+    cv::Mat templ;
+    cv::Mat mask;
+
+    std::vector<std::thread> consumers;
+    std::mutex mutex;
+    std::atomic_int frame_matched_counter;
+
+    const char* window;
+    size_t thread_count;
+    int frame_to_match_counter;
+
+    /**
+     * @brief Create the ouput dir if it does not exist
+     */
+    void create_frames_dir(void)
+    {
+        if(! QDir(OUT_FILES_DIR).exists())
         {
-            consumer.join();
+            QDir().mkdir(OUT_FILES_DIR);
         }
     }
 
-  private:
-    cv::Mat templ;
-    cv::Mat mask;
-    sync_queue<Frame> sq;
-    std::vector<std::thread> consumers;
-    int frame_count;
-
+    void matching_method( cv::Mat& frame, cv::Mat& templ, cv::Mat& mask, int match_method, bool use_mask);
+    void launch_consumers(void);
 };
 
 #endif // TEMPLATE_MATCHER_H

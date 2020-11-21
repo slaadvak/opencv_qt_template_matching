@@ -1,6 +1,9 @@
-QT       += core
+QT       += core widgets
 
 CONFIG += c++17
+
+#CONFIG += c++17 console
+#CONFIG -= app_bundle
 
 # The following define makes your compiler emit warnings if you use
 # any Qt feature that has been marked deprecated (the exact warnings
@@ -14,10 +17,12 @@ DEFINES += QT_DEPRECATED_WARNINGS
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
-    main.cpp
+    main.cpp \
+    template_matcher.cpp
 
 HEADERS += \
-    sync_queue.h
+    sync_queue.h \
+    template_matcher.h
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin
